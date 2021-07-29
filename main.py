@@ -63,7 +63,7 @@ testloader = torch.utils.data.DataLoader(
 
 # Model
 print('==> Building model..')
-#net = VGG('VGG19')
+# net = VGG('VGG19')
 # net = ResNet18()
 # net = PreActResNet18()
 # net = GoogLeNet()
@@ -86,7 +86,7 @@ if device == 'cuda':
 
 criterion = nn.BCEWithLogitsLoss()
 optimizer = optim.SGD(net.parameters(), lr=args.lr,
-                      momentum=0.9, weight_decay=5e-4)
+                      momentum=0.3, weight_decay=5e-4)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
 
 
@@ -132,7 +132,7 @@ def test(epoch):
             all_predictions.extend(outputs.sigmoid().cpu().detach().numpy().tolist())
             roc_auc = roc_auc_score(all_targets, all_predictions)
 
-            progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | score: %.3f '
+            progress_bar(batch_idx, len(testloader), 'Loss: %.3f | score: %.3f '
                          % (test_loss/(batch_idx+1), roc_auc))
 
 
@@ -142,7 +142,7 @@ def test(epoch):
         
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
-        torch.save(net.state, './checkpoint/best_ckpt.pth')
+        torch.save(net.state_dict(), './checkpoint/best_ckpt.pth')
         best_score = roc_auc
 
 
@@ -153,3 +153,8 @@ for epoch in range(start_epoch, start_epoch+args.epoch):
 
 print('Saving..')
 torch.save(net.state_dict(), './checkpoint/last_ckpt.pth')
+
+device = torch.device("cuda")
+model_new = timm.create_model('resnet50',pretrained=True,in_chans=1,num_classes=1) 
+model_new.load_state_dict(torch.load('./checkpoint/best_ckpt.pth'),strict=False)
+model_new.to(device)
