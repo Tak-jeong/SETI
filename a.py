@@ -43,3 +43,5 @@ device = torch.device("cuda")
 model_new = timm.create_model('resnet50',pretrained=True,in_chans=1,num_classes=1) 
 model_new.load_state_dict(torch.load('./checkpoint/best_ckpt.pth'),strict=False)
 model_new.to(device)
+
+

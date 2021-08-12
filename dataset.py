@@ -7,49 +7,26 @@ import numpy as np
 
 
 class SETIDataset(Dataset):
-    def __init__(self,df:pd.DataFrame,path:str,transform=None):
+    def __init__(self,df:pd.DataFrame,path:str,transform=None,is_train: bool=True):
         self.df=df
         self.targets=self.df['target'].values
         self.ids=self.df['id'].values
         self.path=path
         self.transform=transform
+        self.dir_path='train' if is_train else 'test'
 
     def __getitem__(self, index: int):
         label=torch.FloatTensor([self.targets[index]])
         filename=self.ids[index]
 
-        npy_file=self.path.joinpath('train',filename[0],filename+'.npy')
+        npy_file=self.path.joinpath(self.dir_path,filename[0],filename+'.npy')
         img=np.load(npy_file).astype(np.float32)
         img=np.vstack(img).transpose(1,0)
 
         if self.transform:
-            img=self.transform(img)
+            img=self.transform(image=img)
 
-        return img,label
-
-
-
-
-class SETIDatasettest(Dataset):
-    def __init__(self,df:pd.DataFrame,path:str,transform=None):
-        self.df=df
-        self.targets=self.df['target'].values
-        self.ids=self.df['id'].values
-        self.path=path
-        self.transform=transform
-
-    def __getitem__(self, index: int):
-        label=torch.FloatTensor([self.targets[index]])
-        filename=self.ids[index]
-
-        npy_file=self.path.joinpath('test',filename[0],filename+'.npy')
-        img=np.load(npy_file).astype(np.float32)
-        img=np.vstack(img).transpose(1,0)
-
-        if self.transform:
-            img=self.transform(img)
-
-        return img,label
+        return img['image'], label
 
 
 

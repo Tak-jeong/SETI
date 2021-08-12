@@ -4,25 +4,32 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
+from torch.utils.tensorboard import SummaryWriter
+from datetime import datetime
 
-import torchvision
-import torchvision.models as models
-import torchvision.transforms as transforms
 import timm
 from sklearn.metrics import roc_auc_score
 
 import os
 import argparse
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedKFold
 from pathlib import Path
-from utils import progress_bar
-from dataset import SETIDataset, SETIDatasettest
 
-parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
+from utils import progress_bar
+from dataset import SETIDataset
+
+from gridmask import GridMask
+import albumentations
+from albumentations.pytorch.transforms import ToTensorV2
+from albumentations import (
+    Compose, ShiftScaleRotate, Blur, Resize, Cutout, HorizontalFlip, RandomRotate90, VerticalFlip
+)
+
+parser = argparse.ArgumentParser(description='PyTorch SETI Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
 parser.add_argument('--img', default=224, type=int, help='image size')
-parser.add_argument('--epoch',default=80, type=int, help='num of epoch')
+parser.add_argument('--epoch',default=100, type=int, help='num of epoch')
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -31,49 +38,49 @@ start_epoch = 0  # start from epoch 0 or last checkpoint epoch
 
 # Data
 print('==> Preparing data..')
-transform_train = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((args.img,args.img)),
-    transforms.ToTensor()
+transform_train = albumentations.Compose([
+    Resize(args.img,args.img),
+    ShiftScaleRotate(rotate_limit=15),
+    albumentations.OneOf([
+        GridMask(num_grid=3,rotate=15),
+        GridMask(num_grid=(3,7)),
+        GridMask(num_grid=3,mode=2)],p=1),
+    ToTensorV2()
 ])
 
-transform_test = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((args.img,args.img)),
-    transforms.ToTensor()
+transform_test = albumentations.Compose([
+    Resize(args.img,args.img),
+    ToTensorV2()
 ])
 
-path=Path('/home/datasets/SETI')
-csv_file=path.joinpath('train_labels.csv')
-df=pd.read_csv(csv_file)
-df_test=pd.read_csv('./sample_submission.csv')
+path = Path('/home/datasets/SETI/')
+csv_file = path.joinpath('train_labels.csv')
 
-trainset=SETIDataset(df=df,path=path,transform=transform_train)
+df = pd.read_csv(csv_file)
+skf = StratifiedKFold(n_splits=5,shuffle=True, random_state=42)
 
-testset=SETIDatasettest(df=df_test,path=path,transform=transform_test)
+
+for train_idx, test_idx in skf.split(df, df.target):
+    train_df = df.iloc[train_idx]
+    test_df = df.iloc[test_idx]
+    break
+
+trainset=SETIDataset(df=train_df,path=path,transform=transform_train)
+testset=SETIDataset(df=test_df,path=path,transform=transform_test)
+
 
 
 trainloader = torch.utils.data.DataLoader(
-    trainset, batch_size=128, shuffle=True, num_workers=4)
+    trainset, batch_size=32, shuffle=True, num_workers=4)
+
+testloader = torch.utils.data.DataLoader(
+    testset, batch_size=32, shuffle=False, num_workers=4)
 
 
 # Model
 print('==> Building model..')
-# net = VGG('VGG19')
-# net = ResNet18()
-# net = PreActResNet18()
-# net = GoogLeNet()
-# net = DenseNet121()
-# net = ResNeXt29_2x64d()
-# net = MobileNet()
-# net = MobileNetV2()
-# net = DPN92()
-# net = ShuffleNetG2()
-# net = SENet18()
-# net = ShuffleNetV2(1)
-# net = EfficientNetB0()
-# net = RegNetX_200MF()
-net=timm.create_model('resnet50',pretrained=True,in_chans=1,num_classes=1)
+
+net=timm.create_model('efficientnet_b4',pretrained=True,in_chans=1,num_classes=1)
 net = net.to(device)
 if device == 'cuda':
     net = torch.nn.DataParallel(net)
@@ -81,18 +88,20 @@ if device == 'cuda':
 
 
 criterion = nn.BCEWithLogitsLoss()
-optimizer = optim.SGD(net.parameters(), lr=args.lr,
-                      momentum=0.3, weight_decay=5e-4)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
+optimizer = optim.Adam(net.parameters(), lr=args.lr,
+                      weight_decay=1e-6)
+scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,milestones=[10,20,30,40],gamma=0.5)
 
+current_time=datetime.now().strftime('%b%d_%H-%M-%S')
+log_dir=os.path.join(f'runs/{current_time}')
+writer=SummaryWriter(log_dir)
 
 # Training
-def train(epoch):
-    print('\nEpoch: %d' % epoch)
+def train():
     net.train()
     train_loss = 0
     all_targets = []
-    all_predictions = [] 
+    all_predictions = []
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         inputs, targets = inputs.to(device), targets.to(device)
         
@@ -105,12 +114,14 @@ def train(epoch):
         train_loss += loss.item()
         all_targets.extend(targets.cpu().detach().numpy().tolist())
         all_predictions.extend(outputs.sigmoid().cpu().detach().numpy().tolist())
-        roc_auc = roc_auc_score(all_targets, all_predictions) 
+        roc_auc = roc_auc_score(all_targets, all_predictions)
         progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | score: %.3f '
                      % (train_loss/(batch_idx+1), roc_auc))
+        
+    return train_loss/(batch_idx+1), roc_auc
 
 
-def test(epoch):
+def test():
     global best_score
     net.eval()
     test_loss = 0
@@ -130,34 +141,31 @@ def test(epoch):
 
             progress_bar(batch_idx, len(testloader), 'Loss: %.3f | score: %.3f '
                          % (test_loss/(batch_idx+1), roc_auc))
-
-
+        
     # Save checkpoint.
     if roc_auc > best_score:
         print('Saving..')
         
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
-        torch.save(net.state_dict(), './checkpoint/best_ckpt_sub.pth')
+        torch.save(net.state_dict(), './checkpoint/best_ckpt.pth')
         best_score = roc_auc
+    
+    return test_loss/(batch_idx+1), roc_auc
 
 
 for epoch in range(start_epoch, start_epoch+args.epoch):
-    train(epoch)
+    print('\n[Epoch: %d]'%epoch)
+    train_loss,train_roc_auc=train()
+    test_loss, test_roc_auc=test()
     scheduler.step()
 
+    writer.add_scalar('Loss/train',train_loss, epoch)
+    writer.add_scalar('Loss/test',test_loss, epoch)
+    writer.add_scalar('ROC_AUC/train',train_roc_auc, epoch)
+    writer.add_scalar('ROC_AUC/test',test_roc_auc, epoch)
+
+
 print('Saving..')
-torch.save(net.state_dict(), './checkpoint/last_ckpt_sub.pth')
-
-device = torch.device("cuda")
-model_new = timm.create_model('resnet50',pretrained=True,in_chans=1,num_classes=1) 
-model_new.load_state_dict(torch.load('./checkpoint/best_ckpt.pth'),strict=False)
-model_new.to(device)
-
-test = pd.read_csv('./sample_submission.csv')
-test_idx=test['id'].values
-test['file_path'] = test['id'].apply(lambda x: f'.../datasets/SETI/test/{x[0]}/{x}.npy')
-preds = model_new(test['id'].values)
-preds = preds.reshape(-1)
-submission = pd.DataFrame({'id':test['id'],'target':preds})
-submission.to_csv('submission.csv',index=False)
+torch.save(net.state_dict(), './checkpoint/last_ckpt.pth')
+writer.close()
