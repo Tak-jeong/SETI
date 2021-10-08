@@ -1,4 +1,6 @@
 '''Train CIFAR10 with PyTorch.'''
+from albumentations.augmentations.functional import gauss_noise
+from albumentations.core.composition import OneOf
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -23,7 +25,7 @@ from gridmask import GridMask
 import albumentations
 from albumentations.pytorch.transforms import ToTensorV2
 from albumentations import (
-    Compose, ShiftScaleRotate, Blur, Resize, Cutout, HorizontalFlip, RandomRotate90, VerticalFlip
+    Compose, ShiftScaleRotate, Blur, Resize, Cutout, HorizontalFlip, RandomRotate90, VerticalFlip, GaussNoise, MotionBlur
 )
 
 parser = argparse.ArgumentParser(description='PyTorch SETI Training')
@@ -40,11 +42,16 @@ start_epoch = 0  # start from epoch 0 or last checkpoint epoch
 print('==> Preparing data..')
 transform_train = albumentations.Compose([
     Resize(args.img,args.img),
-    ShiftScaleRotate(rotate_limit=15),
-    albumentations.OneOf([
-        GridMask(num_grid=3,rotate=15),
-        GridMask(num_grid=(3,7)),
-        GridMask(num_grid=3,mode=2)],p=1),
+    OneOf([
+    GaussNoise(p=1),
+    MotionBlur(p=1),
+    ShiftScaleRotate(rotate_limit=15)
+    ],p=0.5),
+    
+    albumentations.Compose([
+        HorizontalFlip(p=1),
+        VerticalFlip(p=1)
+    ],p=0.3),
     ToTensorV2()
 ])
 
@@ -80,7 +87,7 @@ testloader = torch.utils.data.DataLoader(
 # Model
 print('==> Building model..')
 
-net=timm.create_model('efficientnet_b4',pretrained=True,in_chans=1,num_classes=1)
+net=timm.create_model('eca_nfnet_l2',pretrained=True,in_chans=1,num_classes=1)
 net = net.to(device)
 if device == 'cuda':
     net = torch.nn.DataParallel(net)
@@ -88,9 +95,10 @@ if device == 'cuda':
 
 
 criterion = nn.BCEWithLogitsLoss()
-optimizer = optim.Adam(net.parameters(), lr=args.lr,
+optimizer = optim.AdamW(net.parameters(), lr=args.lr,
                       weight_decay=1e-6)
-scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,milestones=[10,20,30,40],gamma=0.5)
+#scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,milestones=[15,30],gamma=0.1)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,T_max=6)
 
 current_time=datetime.now().strftime('%b%d_%H-%M-%S')
 log_dir=os.path.join(f'runs/{current_time}')
@@ -148,7 +156,7 @@ def test():
         
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
-        torch.save(net.state_dict(), './checkpoint/best_ckpt.pth')
+        torch.save(net.state_dict(),os.path.join(log_dir,'best_ckpt.pth'))
         best_score = roc_auc
     
     return test_loss/(batch_idx+1), roc_auc
@@ -167,5 +175,5 @@ for epoch in range(start_epoch, start_epoch+args.epoch):
 
 
 print('Saving..')
-torch.save(net.state_dict(), './checkpoint/last_ckpt.pth')
+torch.save(net.state_dict(),os.path.join(log_dir,'last_ckpt.pth'))
 writer.close()

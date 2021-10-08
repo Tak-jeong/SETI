@@ -8,7 +8,7 @@ import numpy as np
 
 import albumentations
 from albumentations.pytorch.transforms import ToTensorV2
-from albumentations import (    
+from albumentations import (
     Compose, ShiftScaleRotate, Blur, Resize, Cutout
 )
 
@@ -45,19 +45,19 @@ path=Path('/home/datasets/SETI')
 df_test=pd.read_csv('./sample_submission.csv')
 testset=SETIDataset(df=df_test, path=path, transform=transform_test, is_train=False)
 testloader = torch.utils.data.DataLoader(
-    testset, batch_size=256, shuffle=True, num_workers=4)
+    testset, batch_size=256, shuffle=False, num_workers=4)
 
 
 # Model
 print('==> Building model..')
-net=timm.create_model('efficientnet_b4',pretrained=True,in_chans=1,num_classes=1)
+net=timm.create_model('nfnet_l0',pretrained=True,in_chans=1,num_classes=1)
 net = net.to(device)
 if device == 'cuda':
     net = torch.nn.DataParallel(net)
     cudnn.benchmark = True
 
 
-checkpoint=torch.load('./checkpoint/best_ckpt.pth')
+checkpoint=torch.load('./runs/Aug17_14-21-38/last_ckpt.pth')
 net.load_state_dict(checkpoint)
 
 
@@ -79,4 +79,4 @@ predictions=test()
 predictions=np.array(predictions)
 predictions=(predictions-predictions.min())/(predictions.max()-predictions.min())
 df_test.target=predictions
-df_test.to_csv('submission_Efficient_b4.csv',index=False)
+df_test.to_csv('submission_nfnet_l0_last_640_withoutgm.csv',index=False)
